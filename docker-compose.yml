@@ -73,3 +73,17 @@ services:
         condition: service_started
       consumer:
         condition: service_started
+
+  # 空间授权治理回放：docker compose run --rm replay-access
+  replay-access:
+    build: .
+    profiles: ["replay"]
+    command: python scripts/replay_access.py
+    environment:
+      API_URL: http://api:8000
+      ADMIN_KEY: admin-key
+      OPERATOR_KEY: operator-key
+      CONSUMER_KEY: consumer-key
+    depends_on:
+      api:
+        condition: service_started

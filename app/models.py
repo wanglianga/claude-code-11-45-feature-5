@@ -290,3 +290,231 @@ class ConsumerFlag(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(String(200), default="")
+
+
+# ---------------- 空间授权治理 ----------------
+
+class AuthUser(Base):
+    """虚构授权用户（数据接口治理用，不接真实账号/外部权限服务）。"""
+
+    __tablename__ = "auth_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    api_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SpatialCrs(Base):
+    """共同坐标系声明。所有授权几何必须落在同一共同 CRS 下，无法解释即配置问题。"""
+
+    __tablename__ = "spatial_crs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    length_unit: Mapped[str] = mapped_column(String(16), default="m")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SpatialZone(Base):
+    """多边形港区（带版本的生效区间）。
+
+    polygons: [{"exterior": [[x,y],...], "holes": [[[x,y],...]]}, ...]
+    支持多个不相连区域与内部孔洞；边界归属由 boundary_rule 显式声明。
+    边界更正 = 同 code 新增版本（旧版本置 valid_to），求值按观测时刻取适用版本。
+    """
+
+    __tablename__ = "spatial_zones"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), index=True)
+    version_no: Mapped[int] = mapped_column(Integer, default=1)
+    name: Mapped[str] = mapped_column(String(200))
+    crs_id: Mapped[int] = mapped_column(ForeignKey("spatial_crs.id"), index=True)
+    polygons: Mapped[list] = mapped_column(JSONB)
+    boundary_rule: Mapped[str] = mapped_column(String(8), default="INCLUDE")  # INCLUDE/EXCLUDE
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("code", "version_no", name="uq_zone_version"),
+    )
+
+
+class StationInstallation(Base):
+    """站点安装记录（迁站历史）。半开区间 [valid_from, valid_to)。
+
+    观测位置按观测发生时适用的安装记录解释；搬迁不改变旧观测的位置资格。
+    x/y 为共同 CRS 下平面坐标，uncertainty_radius 为定位误差范围（同 CRS 长度单位）。
+    """
+
+    __tablename__ = "station_installations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("stations.id"), index=True)
+    x: Mapped[float] = mapped_column(Float)
+    y: Mapped[float] = mapped_column(Float)
+    uncertainty_radius: Mapped[float] = mapped_column(Float, default=0.0)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AccessLicense(Base):
+    """一条完整授权条件（不可拆拼）：区域 × 观测适用日期 × 产品阶段 × 允许字段 × 最细粒度。
+
+    多条许可只取各自完整条件成立的数据并集；DENY 在其适用范围优先；
+    revoked_at 非空或尚未到 valid_from 的许可不参与放行。
+    min_grid_seconds：最细时间粒度（格距秒数），仅当请求格距 >= 该值时其观测才可参与。
+    """
+
+    __tablename__ = "access_licenses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("auth_users.id"), index=True)
+    effect: Mapped[str] = mapped_column(String(8))  # ALLOW / DENY
+    zone_code: Mapped[str] = mapped_column(String(64), index=True)  # 按观测时刻解析 zone 版本
+    obs_valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    obs_valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stages: Mapped[list] = mapped_column(JSONB, default=list)
+    allowed_fields: Mapped[list] = mapped_column(JSONB, default=list)
+    min_grid_seconds: Mapped[int] = mapped_column(Integer)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # 许可生效时刻
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    note: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RangeEvaluation(Base):
+    """一次联合范围求值：绑定请求范围、数据截止点与逐条观测的判定明细。"""
+
+    __tablename__ = "range_evaluations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("auth_users.id"), index=True)
+    scope: Mapped[dict] = mapped_column(JSONB)          # 窗口/格距/阶段/字段/站点/目标基准
+    cutoff_obs_id: Mapped[int] = mapped_column(BigInteger)
+    license_snapshot: Mapped[list] = mapped_column(JSONB, default=list)  # 参与求值的许可条件快照
+    scope_hash: Mapped[str] = mapped_column(String(64), index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="online")  # online / membership
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RangeEvaluationItem(Base):
+    """求值明细：每条观测绑定具体位置、适用安装、命中许可与放行/排除结论。"""
+
+    __tablename__ = "range_evaluation_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    evaluation_id: Mapped[int] = mapped_column(ForeignKey("range_evaluations.id"), index=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("stations.id"), index=True)
+    obs_id: Mapped[int] = mapped_column(ForeignKey("raw_observations.id"), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    installation_id: Mapped[int | None] = mapped_column(ForeignKey("station_installations.id"),
+                                                        nullable=True)
+    x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uncertainty_radius: Mapped[float | None] = mapped_column(Float, nullable=True)
+    verdict: Mapped[str] = mapped_column(String(24), index=True)
+    # ALLOWED / DENIED / UNCERTAIN / NO_LICENSE / NO_INSTALLATION / LICENSE_TOO_FINE
+    license_id: Mapped[int | None] = mapped_column(ForeignKey("access_licenses.id"), nullable=True)
+    matched_license_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    deny_license_id: Mapped[int | None] = mapped_column(nullable=True)
+    reasons: Mapped[list] = mapped_column(JSONB, default=list)
+
+
+class AccessSession(Base):
+    """分页会话：固定产品范围与数据截止点；每页仍联查当前许可状态。"""
+
+    __tablename__ = "access_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("auth_users.id"), index=True)
+    evaluation_id: Mapped[int] = mapped_column(ForeignKey("range_evaluations.id"))
+    scope_hash: Mapped[str] = mapped_column(String(64))
+    page_size: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE")  # ACTIVE/TERMINATED
+    terminate_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_page_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ExtractionTask(Base):
+    """受限产品文件生成任务。暂存内容与可领取内容分开，撤回后不得重新挂为可下载。"""
+
+    __tablename__ = "extraction_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("auth_users.id"), index=True)
+    evaluation_id: Mapped[int] = mapped_column(ForeignKey("range_evaluations.id"))
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("access_sessions.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="STAGED")
+    # STAGED / READY / CLAIMED / REVOKED / FAILED
+    staging_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ready_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(80), unique=True, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope: Mapped[dict] = mapped_column(JSONB)
+    allowed_fields: Mapped[list] = mapped_column(JSONB, default=list)
+    cell_count: Mapped[int] = mapped_column(Integer, default=0)
+    station_codes: Mapped[list] = mapped_column(JSONB, default=list)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DeliveryRecord(Base):
+    """交付登记：生成内容（哈希/确切范围）+ 接收主体；领取记录另表追加。"""
+
+    __tablename__ = "delivery_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("extraction_tasks.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("auth_users.id"), index=True)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    delivered_scope: Mapped[dict] = mapped_column(JSONB)
+    license_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    station_codes: Mapped[list] = mapped_column(JSONB, default=list)
+    cell_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ClaimRecord(Base):
+    """领取记录：每次尝试都留痕（成功/拒绝），可从文件反查实际使用的条件。"""
+
+    __tablename__ = "claim_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    delivery_id: Mapped[int | None] = mapped_column(ForeignKey("delivery_records.id"), nullable=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("extraction_tasks.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("auth_users.id"), index=True)
+    result: Mapped[str] = mapped_column(String(24))  # CLAIMED / DENIED_REVOKED / ALREADY_CLAIMED
+    detail: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LicenseMembership(Base):
+    """预计算成员关系：站点适用区间 × 许可。重建期间旧行置 STALE，求值不得使用 STALE 行。"""
+
+    __tablename__ = "license_memberships"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    license_id: Mapped[int] = mapped_column(ForeignKey("access_licenses.id"), index=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("stations.id"), index=True)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    geometry_verdict: Mapped[str] = mapped_column(String(16))  # IN / UNCERTAIN
+    status: Mapped[str] = mapped_column(String(8), default="ACTIVE", index=True)  # ACTIVE/STALE
+    rebuilt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)

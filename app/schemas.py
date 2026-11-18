@@ -76,3 +76,84 @@ class SubscriptionIn(BaseModel):
     stages: list[Literal["PRELIMINARY", "CONFIRMED"]]
     endpoint_url: str
     active: bool = True
+
+
+# ---------------- 空间授权治理 ----------------
+
+class AuthUserIn(BaseModel):
+    code: str
+    name: str
+    api_key: str | None = Field(default=None, description="留空则服务端生成")
+
+
+class CrsIn(BaseModel):
+    code: str
+    name: str
+    length_unit: str = "m"
+
+
+class PolygonIn(BaseModel):
+    exterior: list[tuple[float, float]] = Field(description="外环顶点 [[x,y],...]，可首尾不闭合")
+    holes: list[list[tuple[float, float]]] | None = None
+
+
+class ZoneIn(BaseModel):
+    code: str
+    name: str
+    polygons: list[PolygonIn]
+    boundary_rule: Literal["INCLUDE", "EXCLUDE"] = "INCLUDE"
+    valid_from: datetime
+    valid_to: datetime | None = None
+
+
+class InstallationIn(BaseModel):
+    station: str = Field(description="站点 code")
+    x: float
+    y: float
+    uncertainty_radius: float = 0.0
+    valid_from: datetime
+    valid_to: datetime | None = None
+    note: str = ""
+
+
+class LicenseIn(BaseModel):
+    code: str
+    user: str = Field(description="授权用户 code")
+    effect: Literal["ALLOW", "DENY"]
+    zone_code: str
+    obs_valid_from: datetime
+    obs_valid_to: datetime | None = None
+    stages: list[Literal["PRELIMINARY", "CONFIRMED"]]
+    allowed_fields: list[str]
+    min_grid_seconds: int = Field(description="最细时间粒度（格距秒数），请求格距不得更细")
+    valid_from: datetime
+    valid_to: datetime | None = None
+    note: str = ""
+
+
+class RevokeIn(BaseModel):
+    reason: str
+
+
+class ScopeIn(BaseModel):
+    window_start: datetime
+    window_end: datetime
+    grid_seconds: int
+    stage: Literal["PRELIMINARY", "CONFIRMED"]
+    fields: list[str]
+    target_datum: str
+    region: str | None = None
+    stations: list[str] | None = None
+    product_kind: Literal["STATION", "REGION_AGG"] = "STATION"
+    boundary_cells: Literal["MISSING", "DECLINE"] = "MISSING"
+    mode: Literal["online", "membership"] = "online"
+
+
+class SessionIn(BaseModel):
+    scope: ScopeIn
+    page_size: int = 100
+
+
+class ExtractionIn(BaseModel):
+    task_key: str
+    scope: ScopeIn

@@ -25,3 +25,6 @@ WORKER_RETRY_BACKOFF_SEC = int(os.getenv("WORKER_RETRY_BACKOFF_SEC", "5"))
 # 消费端模拟故障标志
 FLAG_DROP_ACK = "drop_ack"
 FLAG_OFFLINE = "offline"
+
+# 受限产品文件暂存/可领取目录（暂存内容与已允许领取内容物理分开）
+EXTRACT_DIR = os.getenv("EXTRACT_DIR", "/tmp/tide_extractions")

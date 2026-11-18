@@ -45,15 +45,18 @@ from .services import (
     superseded_deliveries,
 )
 from .worker import run_once as worker_run_once
+from .access_api import router as access_router
 
 app = FastAPI(
     title="潮位观测数据产品发布与订阅服务",
-    version="1.0.0",
+    version="1.1.0",
     description=(
-        "站点与基准登记、产品生成（初报/确认分阶段发布）、订阅管理与交付记录。"
+        "站点与基准登记、产品生成（初报/确认分阶段发布）、订阅管理与交付记录；"
+        "空间授权治理（/access）：联合范围求值、授权约束下重新聚合、分页撤回控制与受控领取。"
         "基准转换带版本快照与生效区间；产品、清单与待交付任务同事务提交。"
     ),
 )
+app.include_router(access_router)
 
 
 @app.on_event("startup")
